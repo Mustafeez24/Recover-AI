@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models import FailureCategory, RecoveryCase, RecoveryPriority
 from app.recovery.engine import get_summary, run_detection
+from app.recovery.workflow import execute_action, get_action_summary, plan_action, validate_action_step
 
 router = APIRouter(prefix="/api/recovery", tags=["recovery"])
 
@@ -24,6 +25,12 @@ def _case_to_dict(case: RecoveryCase) -> dict:
         "detection_reason": case.detection_reason,
         "recommended_next_step": case.recommended_next_step,
         "created_at": case.created_at.isoformat(),
+        "action": case.action,
+        "action_reason": case.action_reason,
+        "last_validation_result": case.last_validation_result,
+        "execution_status": case.execution_status,
+        "recovered_amount": float(case.recovered_amount or 0),
+        "recovery_attempts": case.recovery_attempts or 0,
     }
 
 
@@ -101,3 +108,66 @@ def get_opportunity(recovery_case_id: str, db: Session = Depends(get_db)):
 @router.get("/summary")
 def summary(db: Session = Depends(get_db)):
     return get_summary(db)
+
+
+def _get_case_or_404(db: Session, recovery_case_id: str) -> RecoveryCase:
+    case = db.get(RecoveryCase, recovery_case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail="Recovery opportunity not found")
+    return case
+
+
+@router.post("/opportunities/{recovery_case_id}/plan")
+def plan(recovery_case_id: str, db: Session = Depends(get_db)):
+    """Select a recovery action for this opportunity. Safe to call
+    repeatedly -- an already-planned case is returned as-is."""
+    case = _get_case_or_404(db, recovery_case_id)
+    return plan_action(db, case)
+
+
+@router.post("/opportunities/{recovery_case_id}/validate")
+def validate(recovery_case_id: str, db: Session = Depends(get_db)):
+    """Run the safety validator on the planned action. Never executes
+    anything -- only decides whether execution would be allowed."""
+    case = _get_case_or_404(db, recovery_case_id)
+    return validate_action_step(db, case)
+
+
+@router.post("/opportunities/{recovery_case_id}/execute")
+def execute(recovery_case_id: str, db: Session = Depends(get_db)):
+    """Simulate carrying out the validated action locally. Never calls a
+    real payment provider, and never moves real money. Safe to call
+    repeatedly -- a terminal case's existing result is returned, not
+    double-counted."""
+    case = _get_case_or_404(db, recovery_case_id)
+    result = execute_action(db, case)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/opportunities/{recovery_case_id}/history")
+def history(recovery_case_id: str, db: Session = Depends(get_db)):
+    case = _get_case_or_404(db, recovery_case_id)
+    return {
+        "recovery_case_id": case.recovery_case_id,
+        "current_status": case.status,
+        "history": [
+            {
+                "action": h.action,
+                "previous_state": h.previous_state,
+                "new_state": h.new_state,
+                "reason": h.reason,
+                "validation_result": h.validation_result,
+                "execution_result": h.execution_result,
+                "amount": float(h.amount) if h.amount is not None else None,
+                "created_at": h.created_at.isoformat(),
+            }
+            for h in case.history
+        ],
+    }
+
+
+@router.get("/action-summary")
+def action_summary(db: Session = Depends(get_db)):
+    return get_action_summary(db)

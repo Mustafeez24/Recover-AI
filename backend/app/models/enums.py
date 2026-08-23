@@ -44,3 +44,22 @@ class FailureCategory(str, enum.Enum):
     SUBSCRIPTION_FAILURE = "subscription_failure"
     ABANDONED_CHECKOUT = "abandoned_checkout"
     REPEATED_FAILURE = "repeated_failure"
+
+
+class RecoveryAction(str, enum.Enum):
+    RETRY_PAYMENT = "retry_payment"
+    SCHEDULE_RETRY = "schedule_retry"
+    SEND_PAYMENT_REMINDER = "send_payment_reminder"
+    REQUEST_PAYMENT_METHOD_UPDATE = "request_payment_method_update"
+    ESCALATE = "escalate"
+
+
+class RecoveryCaseStatus(str, enum.Enum):
+    DETECTED = "detected"
+    PLANNED = "planned"
+    VALIDATED = "validated"
+    EXECUTING = "executing"
+    RECOVERED = "recovered"
+    FAILED = "failed"
+    ESCALATED = "escalated"
+    EXHAUSTED = "exhausted"

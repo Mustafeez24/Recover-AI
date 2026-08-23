@@ -38,8 +38,8 @@ Recover-AI/
 │   │   ├── core/       # config/settings
 │   │   ├── data_generation/  # synthetic dataset generator + seed script
 │   │   ├── db/         # SQLAlchemy session/base
-│   │   ├── models/     # SQLAlchemy models (Customer, Subscription, Payment, RecoveryCase)
-│   │   ├── recovery/   # deterministic revenue-leakage detection engine
+│   │   ├── models/     # SQLAlchemy models (Customer, Subscription, Payment, RecoveryCase, RecoveryActionHistory)
+│   │   ├── recovery/   # deterministic detection + recovery action engine
 │   │   ├── schemas/    # Pydantic schemas
 │   │   └── main.py     # app entrypoint
 │   ├── tests/
@@ -210,7 +210,7 @@ Example opportunity:
   "recovery_case_id": "rec_pay_sub_004595",
   "payment_id": "pay_sub_004595",
   "customer_id": "cus_01194",
-  "status": "open",
+  "status": "detected",
   "priority": "high",
   "amount_at_risk": 2999.0,
   "customer_value": 35988.0,
@@ -219,6 +219,145 @@ Example opportunity:
   "recommended_next_step": "retry_subscription_payment",
   "created_at": "2026-08-23T18:03:13.065981"
 }
+```
+
+### 6. Recovery actions (simulated -- no real money ever moves)
+
+Phase 4 takes each recovery opportunity Phase 3 found and decides the
+safest **bounded action** to take, validates that it's actually safe to
+run, and then **simulates** running it locally. Nothing here ever calls
+Razorpay or moves real money — `execute` only ever writes to the local
+database.
+
+```
+Recovery Opportunity → Action Eligibility → Action Selection → Safety
+Validation → Execute (simulated) → Update Recovery Case → Record Result
+```
+
+#### Recovery action types
+
+| Action | Meaning |
+|---|---|
+| `retry_payment` | Attempt the payment again right now |
+| `schedule_retry` | Defer to a later retry rather than trying again immediately |
+| `send_payment_reminder` | Nudge the customer, don't touch the payment method |
+| `request_payment_method_update` | Ask the customer to fix/replace their payment method |
+| `escalate` | Hand off to manual review — the safe fallback whenever automation looks risky |
+
+#### Action-selection rules (deterministic, one action per case)
+
+| Failure category | Rule |
+|---|---|
+| `abandoned_checkout` | Always `send_payment_reminder` |
+| `temporary_failure` | `retry_payment` |
+| `payment_timeout` | `retry_payment` on the first attempt, else `schedule_retry` |
+| `insufficient_funds` | `schedule_retry` if priority is HIGH, else `send_payment_reminder` |
+| `subscription_failure` | `escalate` if the subscription is already canceled; `retry_payment` on the first attempt; else `request_payment_method_update` |
+| `repeated_failure` | `escalate` if amount ≥ ₹5,000 or customer success rate < 40%; else `request_payment_method_update` |
+
+Two safety overrides apply before any of the above: a payment already
+retried 4+ times, or a case that's already gone through 3 automated
+recovery attempts, is escalated rather than attempted again. Every
+selection comes with a plain-English reason (`action_reason`).
+
+#### Safety validation (runs before every execution)
+
+An action is rejected — never silently run — if: the payment already
+succeeded, the case is already `recovered` / `escalated` / `exhausted`,
+the retry limit has been reached, the subscription is canceled and the
+action would retry anyway, the action isn't semantically valid for the
+case's failure category, or required payment/case data is missing.
+
+#### State machine
+
+```
+DETECTED → PLANNED → VALIDATED → EXECUTING → RECOVERED
+                ↓                     ↓  ↓
+              FAILED ←────────────────┘  └→ ESCALATED
+             ↙  ↓  ↘
+      PLANNED  ESCALATED  EXHAUSTED
+```
+
+`PLANNED → FAILED` happens when validation rejects the planned action.
+`EXECUTING → ESCALATED` happens when the executed action was itself
+`escalate`. A `FAILED` case can be re-planned (retry loop) up to 3 times
+before it's marked `EXHAUSTED`, or escalated directly if the underlying
+payment's own retry limit is hit in the meantime. `RECOVERED`,
+`ESCALATED`, and `EXHAUSTED` are terminal — every transition is checked
+against an explicit allow-list, so an invalid jump (e.g. `DETECTED`
+straight to `RECOVERED`) is rejected, not silently allowed.
+
+#### Simulated execution (deterministic, never random)
+
+- `retry_payment`: recovered if the customer's historical success rate
+  is ≥ 50%, otherwise failed — same inputs always produce the same
+  outcome.
+- `schedule_retry` / `send_payment_reminder` / `request_payment_method_update`:
+  deterministically land on `failed` with a descriptive
+  `execution_status` (`scheduled`, `pending_customer_action`,
+  `action_required`) — nothing to recover *yet*, by design; a later
+  phase's webhook integration would resolve these for real.
+- `escalate`: always lands on `escalated`.
+
+`recovered_amount` is clamped so it can never exceed `amount_at_risk`.
+
+#### Idempotency
+
+Planning an already-planned case, validating an already-validated one,
+or executing an already-terminal one all return the existing result
+instead of redoing the work — no duplicate plans, no double-counted
+revenue, safe to retry any step any number of times.
+
+#### Audit trail
+
+Every plan/validate/execute step appends a row to
+`recovery_action_history` (action, previous/new state, reason,
+validation result, execution result, amount, timestamp) — the full
+decision history for a case is always reconstructable.
+
+#### API usage
+
+```bash
+# Select and record an action for this opportunity
+curl -X POST http://localhost:8000/api/recovery/opportunities/rec_pay_sub_004595/plan
+
+# Run the safety validator (does not execute anything)
+curl -X POST http://localhost:8000/api/recovery/opportunities/rec_pay_sub_004595/validate
+
+# Simulate executing the validated action (local only, no real payment call)
+curl -X POST http://localhost:8000/api/recovery/opportunities/rec_pay_sub_004595/execute
+
+# Full plan/validate/execute history for a case
+curl http://localhost:8000/api/recovery/opportunities/rec_pay_sub_004595/history
+
+# Aggregate action metrics across every case
+curl http://localhost:8000/api/recovery/action-summary
+```
+
+Example `execute` response:
+
+```json
+{
+  "already_executed": false,
+  "execution_status": "success",
+  "recovered_amount": 2999.0,
+  "status": "recovered",
+  "failure_reason": null
+}
+```
+
+#### Database migration
+
+`recovery_cases` gained new nullable/defaulted columns (`action`,
+`action_reason`, `planned_at`, `last_validation_result`,
+`last_validation_reason`, `execution_status`, `executed_at`,
+`execution_failure_reason`, `recovered_amount`, `recovery_attempts`),
+and a new `recovery_action_history` table was added. Nothing is dropped
+or rewritten — existing customer/subscription/payment/recovery-case data
+is untouched. Run once, safe to re-run:
+
+```bash
+python -m app.db.migrate_phase4
 ```
 
 ## Status
@@ -230,12 +369,17 @@ check API, homepage, and local Postgres configuration.
 (customers, subscriptions, payments), plus a duplicate-safe seeding
 script and a `/api/data/summary` endpoint to verify the data.
 
-**Phase 3 (current):** a deterministic revenue leakage detection engine
-that analyzes payments and creates prioritized `RecoveryCase` records
+**Phase 3:** a deterministic revenue leakage detection engine that
+analyzes payments and creates prioritized `RecoveryCase` records
 (rule-based eligibility, HIGH/MEDIUM/LOW priority, no ML/LLM), plus
 `/api/recovery/detect`, `/opportunities`, `/opportunities/{id}`, and
 `/summary` endpoints.
 
-Not implemented yet: AI/Ollama integration, the recovery action/state
-machine, Razorpay integration and webhooks, the dashboard, authentication,
-and payment execution.
+**Phase 4 (current):** a deterministic recovery action engine
+(action selection, safety validation, a state machine, simulated -- not
+real -- execution) with a full audit trail, driving each `RecoveryCase`
+through plan → validate → execute via `/opportunities/{id}/plan`,
+`/validate`, `/execute`, `/history`, and `/action-summary`.
+
+Not implemented yet: AI/Ollama integration, Razorpay integration and
+webhooks, real payment execution, the dashboard, and authentication.
