@@ -1,6 +1,17 @@
 from datetime import date, datetime
 
-from app.models import Customer, FailureReason, Payment, PaymentMethod, PaymentStatus, RecoveryCase, Subscription, SubscriptionStatus
+from app.models import (
+    Customer,
+    FailureCategory,
+    FailureReason,
+    Payment,
+    PaymentMethod,
+    PaymentStatus,
+    RecoveryCase,
+    RecoveryPriority,
+    Subscription,
+    SubscriptionStatus,
+)
 
 
 def _make_customer(customer_id="cus_00001"):
@@ -99,6 +110,12 @@ def test_recovery_case_model_creation(db_session):
         payment_id=payment.payment_id,
         customer_id=customer.customer_id,
         status="open",
+        priority=RecoveryPriority.MEDIUM,
+        amount_at_risk=499.0,
+        customer_value=0,
+        failure_category=FailureCategory.INSUFFICIENT_FUNDS,
+        detection_reason="test reason",
+        recommended_next_step="send_payment_reminder",
         created_at=datetime.utcnow(),
     )
     db_session.add(case)
@@ -198,6 +215,12 @@ def test_payment_recovery_case_relationship(db_session):
         payment_id=payment.payment_id,
         customer_id=customer.customer_id,
         status="open",
+        priority=RecoveryPriority.LOW,
+        amount_at_risk=250.0,
+        customer_value=0,
+        failure_category=FailureCategory.PAYMENT_TIMEOUT,
+        detection_reason="test reason",
+        recommended_next_step="retry_payment",
         created_at=datetime.utcnow(),
     )
     db_session.add(case)

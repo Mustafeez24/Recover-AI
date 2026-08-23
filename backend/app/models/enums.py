@@ -29,3 +29,18 @@ class PaymentMethod(str, enum.Enum):
     UPI = "upi"
     NETBANKING = "netbanking"
     WALLET = "wallet"
+
+
+class RecoveryPriority(str, enum.Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class FailureCategory(str, enum.Enum):
+    TEMPORARY_FAILURE = "temporary_failure"
+    INSUFFICIENT_FUNDS = "insufficient_funds"
+    PAYMENT_TIMEOUT = "payment_timeout"
+    SUBSCRIPTION_FAILURE = "subscription_failure"
+    ABANDONED_CHECKOUT = "abandoned_checkout"
+    REPEATED_FAILURE = "repeated_failure"
