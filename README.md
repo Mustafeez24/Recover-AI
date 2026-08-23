@@ -36,8 +36,9 @@ Recover-AI/
 │   ├── app/
 │   │   ├── api/        # route handlers
 │   │   ├── core/       # config/settings
+│   │   ├── data_generation/  # synthetic dataset generator + seed script
 │   │   ├── db/         # SQLAlchemy session/base
-│   │   ├── models/     # SQLAlchemy models
+│   │   ├── models/     # SQLAlchemy models (Customer, Subscription, Payment, RecoveryCase)
 │   │   ├── schemas/    # Pydantic schemas
 │   │   └── main.py     # app entrypoint
 │   ├── tests/
@@ -90,11 +91,43 @@ npm run dev
 
 Frontend runs at http://localhost:3000.
 
+### 4. Synthetic data (seed the database)
+
+Phase 2 adds SQLAlchemy models (`Customer`, `Subscription`, `Payment`,
+`RecoveryCase`) and a deterministic synthetic data generator, used later by
+the leakage detection and recovery engines. From `backend/`, with the venv
+active and `.env` in place:
+
+```bash
+python -m app.data_generation.seed
+```
+
+This creates the tables (if missing), generates ~1,200 customers, ~400
+subscriptions, and 5,000+ payments — covering successful payments,
+insufficient funds, temporary failures, timeouts, repeated-retry failures,
+subscription payment failures, and abandoned checkouts — and inserts them.
+Generation is deterministic (fixed seed), so re-running the command is
+safe: rows that already exist (by primary key) are skipped, not duplicated.
+
+Verify the seeded data via the API:
+
+```bash
+curl http://localhost:8000/api/data/summary
+```
+
+No real customer or payment data is used anywhere — all records are
+synthetic and identified only by generated ids.
+
 ## Status
 
-**Phase 1 (current):** project scaffolding only — backend/frontend
-skeletons, health check API, homepage, and local Postgres configuration.
+**Phase 1:** project scaffolding — backend/frontend skeletons, health
+check API, homepage, and local Postgres configuration.
+
+**Phase 2 (current):** database models and a synthetic payment/revenue
+dataset (customers, subscriptions, payments, and a `RecoveryCase` schema
+placeholder for later phases), plus a duplicate-safe seeding script and a
+`/api/data/summary` endpoint to verify the data.
 
 Not implemented yet: AI/Ollama integration, revenue leakage detection,
 the recovery engine, Razorpay integration and webhooks, the dashboard,
-authentication, payment execution, and advanced analytics.
+authentication, and payment execution.
