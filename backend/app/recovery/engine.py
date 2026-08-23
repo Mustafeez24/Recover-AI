@@ -12,7 +12,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Payment, PaymentStatus, RecoveryCase, RecoveryPriority
+from app.models import Payment, PaymentStatus, RecoveryCase, RecoveryCaseStatus, RecoveryPriority
 from app.recovery.rules import analyze_payment
 
 
@@ -61,7 +61,7 @@ def run_detection(session: Session) -> dict:
                 "recovery_case_id": f"rec_{payment.payment_id}",
                 "payment_id": payment.payment_id,
                 "customer_id": payment.customer_id,
-                "status": "open",
+                "status": RecoveryCaseStatus.DETECTED.value,
                 "priority": result["priority"],
                 "amount_at_risk": result["amount_at_risk"],
                 "customer_value": result["customer_value"],

@@ -4,10 +4,13 @@ from app.models.enums import (
     FailureReason,
     PaymentMethod,
     PaymentStatus,
+    RecoveryAction,
+    RecoveryCaseStatus,
     RecoveryPriority,
     SubscriptionStatus,
 )
 from app.models.payment import Payment
+from app.models.recovery_action_history import RecoveryActionHistory
 from app.models.recovery_case import RecoveryCase
 from app.models.subscription import Subscription
 
@@ -16,10 +19,13 @@ __all__ = [
     "Subscription",
     "Payment",
     "RecoveryCase",
+    "RecoveryActionHistory",
     "PaymentStatus",
     "FailureReason",
     "PaymentMethod",
     "SubscriptionStatus",
     "RecoveryPriority",
     "FailureCategory",
+    "RecoveryAction",
+    "RecoveryCaseStatus",
 ]
