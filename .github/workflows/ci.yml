@@ -1,0 +1,50 @@
+name: CI
+
+# Test-only. There is no deploy step here on purpose: Render and Vercel
+# both auto-deploy from GitHub pushes on their own free tiers (see README
+# §9), so this workflow's only job is to gate correctness before that
+# happens.
+on:
+  push:
+    branches: [main, master, "claude/**"]
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      # No Postgres service needed: every DB-touching test overrides
+      # get_db with an isolated in-memory SQLite session (see
+      # tests/conftest.py), so the suite has no real-database dependency.
+      - run: python -m pytest -q
+
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm test -- --run
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
