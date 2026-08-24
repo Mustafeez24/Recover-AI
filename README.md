@@ -607,6 +607,121 @@ would show "Ollama: Unavailable" and fall back to deterministic actions
 throughout, which is itself a legitimate demonstration of the fallback
 behavior Phase 5 was built for, not a bug.
 
+### 9. Production readiness (Phase 7)
+
+Phase 7 adds the configuration, health/error-handling hardening, and
+documentation needed to actually deploy Phases 1-6 for free, without
+touching any recovery business logic, the database schema, or the
+advisory/simulation-only safety model.
+
+**Architecture — local/demo vs. production.** These are deliberately
+different shapes, not two versions of the same thing:
+
+```
+Local/demo:  Next.js (localhost:3000) → FastAPI (localhost:8000) → local Postgres
+                                              ↕
+                                     local Ollama (Qwen 2.5 3B)
+
+Production:  Vercel (Next.js)  --HTTPS-->  Render (FastAPI)  -->  managed Postgres
+                                                  ↕
+                                     Ollama: not deployed (fallback-only)
+```
+
+**Ollama/Qwen 2.5 3B stays local/demo only.** A 3B local model needs real
+CPU/RAM that a free-tier PaaS instance doesn't provide, and bundling
+Ollama into the backend's own container isn't practical. This is not
+treated as a gap to work around: the production backend is expected to
+always find Ollama unreachable, and Phase 5's existing fallback path
+(`AIProviderUnavailableError` → the deterministic action, `fallback_used:
+true`) already handles this correctly with no code change. `GET /health`
+reports this as `"ai_provider": "unavailable"` without ever affecting
+overall status (see below) — a live AI demo has to run against a local
+Ollama instance per §7.
+
+**Backend production configuration**
+- `DATABASE_URL` accepts either `postgres://` or `postgresql://` --
+  normalized automatically (`app/core/config.py`), since managed Postgres
+  providers commonly hand out the former and SQLAlchemy 2.x's psycopg2
+  dialect requires the latter.
+- The container binds to `$PORT` (injected by Render; defaults to 8000
+  otherwise) -- see the Dockerfile's `CMD`.
+- `CORS_ORIGINS` is already env-driven (`app/core/config.py` /
+  `.env.example`) -- production sets it to the deployed Vercel origin,
+  e.g. `CORS_ORIGINS=["https://your-app.vercel.app"]`.
+
+**`GET /health`** now reports three independent fields instead of a bare
+`{"status": "ok"}`:
+```json
+{ "status": "ok", "database": "ok", "ai_provider": "available" }
+```
+`database` runs a cheap `SELECT 1`; `ai_provider` is a non-blocking
+connectivity check. `ai_provider: "unavailable"` is an expected
+production state (see above) and never flips `status` away from `"ok"`
+-- only a real database outage does that (`status: "degraded"`). Neither
+check can raise -- a broken dependency is always reported, never a 500.
+
+**Structured error handling.** A global FastAPI exception handler
+(`app/main.py`) catches anything not already an `HTTPException` and
+returns `{"error": "internal_server_error", "detail": "An unexpected
+error occurred."}` with a 500, instead of letting a raw traceback reach
+the client. Normal `HTTPException` responses (404s, validation errors,
+etc.) are unaffected.
+
+**Docker (backend only).** `backend/Dockerfile` builds a minimal
+`python:3.12-slim` image that installs `requirements.txt`, copies only
+`app/`, runs as a non-root user, and starts
+`uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}`. No secrets,
+`.env` files, or the local Ollama/Qwen model are ever part of the image
+(`backend/.dockerignore` excludes `.env*`, tests, and scripts). The
+frontend is intentionally **not** containerized -- Vercel builds Next.js
+natively, and adding Docker there would be unnecessary infrastructure
+for this project's scope.
+
+**Local dev parity stays docker-compose-free.** A root `docker-compose.yml`
+would only replicate what §1-3 already do directly against a locally
+installed Postgres; it wasn't added since it doesn't provide clear value
+over the existing setup.
+
+**Recommended deployment steps** (manual -- requires your own free-tier
+Render/Vercel accounts; nothing here is done automatically):
+1. Push this repository to GitHub (already the case).
+2. **Database:** create a free managed Postgres instance (Render
+   Postgres, Neon, or Supabase -- pick one; some free-tier offerings are
+   time-limited, so check current terms before committing to one for a
+   long-lived demo). Copy its connection string.
+3. **Backend (Render):** create a new Web Service from this repo with
+   root directory `backend/`, build via the included `Dockerfile`. Set
+   env vars: `DATABASE_URL` (from step 2), `CORS_ORIGINS` (the Vercel URL
+   from step 4, added after it exists), `ENVIRONMENT=production`. Render
+   supplies `PORT` automatically. After the first deploy, run the
+   existing migration scripts once against the hosted DB
+   (`python -m app.db.migrate_phase4`, `python -m app.db.migrate_phase5`
+   -- both additive/idempotent) and optionally `app/data_generation/seed.py`
+   for demo data.
+4. **Frontend (Vercel):** import this repo with root directory
+   `frontend/`, set `NEXT_PUBLIC_API_BASE_URL` to the Render backend's
+   URL from step 3. Vercel's default Next.js build/start commands need no
+   changes.
+5. Update the backend's `CORS_ORIGINS` to include the real Vercel domain
+   and redeploy.
+6. Verify: hit `<backend>/health`, `<backend>/api/data/summary`, then
+   load the Vercel URL and confirm the dashboard renders against the live
+   backend.
+
+**Explicitly out of scope for Phase 7** (by design, per the same
+constraints as every earlier phase): no rate limiting was added (avoids
+an unnecessary dependency for this project's scope); no authentication
+was added -- every endpoint remains open, which is a known, intentional
+limitation of this demo, not an oversight, and would need to be addressed
+before any real deployment handling non-public data; no Razorpay/payment-
+provider integration; no code path executes a real payment anywhere.
+
+**CI (test-only, optional).** `.github/workflows/ci.yml` runs the backend
+`pytest` suite and the frontend `vitest` suite + `next build` on every
+push/PR. It has no deploy step -- Render and Vercel both auto-deploy from
+GitHub pushes on their own free tiers, so this workflow exists purely as
+a correctness gate before that happens.
+
 ## Status
 
 **Phase 1:** project scaffolding — backend/frontend skeletons, health
@@ -634,17 +749,31 @@ structured, Pydantic-validated, safety-gated through Phase 4's own
 validator, and always falling back to the deterministic action if the
 AI is unavailable or its output is rejected.
 
-**Phase 6 (current):** a Next.js web dashboard (executive summary,
-opportunities table, case detail with the Plan → Validate → Execute
-controls and AI recommendation panel, AI analytics, full audit-trail
-timeline) that consumes the existing backend API as-is -- no new
-business logic in the frontend, no bulk-execute endpoint, safety model
-unchanged. A persistent "Simulated / Advisory Only" banner is shown on
-every page.
+**Phase 6:** a Next.js web dashboard (executive summary, opportunities
+table, case detail with the Plan → Validate → Execute controls and AI
+recommendation panel, AI analytics, full audit-trail timeline) that
+consumes the existing backend API as-is -- no new business logic in the
+frontend, no bulk-execute endpoint, safety model unchanged. A persistent
+"Simulated / Advisory Only" banner is shown on every page.
+
+**Phase 7 (current):** production readiness -- `DATABASE_URL` scheme
+normalization, `$PORT` support, env-driven CORS, an enhanced `/health`
+(DB status + non-blocking AI-provider status), a global structured-JSON
+exception handler, a minimal backend-only `Dockerfile`, and a test-only
+CI workflow. No recovery business logic, database schema, or the
+advisory/simulation-only safety model changed. Ollama/Qwen 2.5 3B remains
+local/demo-only by design -- production runs on the existing deterministic
+fallback (see §9).
 
 No real payment has been recovered by any phase so far, Razorpay is not
-yet integrated, and the app has not been deployed to Vercel/Render (see
-§8) -- only local verification has been performed.
+yet integrated, and the app has not actually been deployed to
+Vercel/Render (see §9) -- Phase 7 prepares and documents that deployment,
+it does not perform it; only local verification has been done (the
+backend and frontend test suites and the production frontend build all
+pass, and `/health`, `$PORT` binding, and `DATABASE_URL` normalization
+were exercised against a live server -- see the implementation report for
+the Docker build result in the environment it was produced in).
 
 Not implemented yet: Razorpay integration and webhooks, real payment
-execution, authentication, and an actual Vercel/Render deployment.
+execution, authentication, rate limiting, and an actual live
+Vercel/Render deployment.
