@@ -17,7 +17,7 @@ Detect leakage → Analyze → Recommend action → Validate → Execute → Mea
 
 - **Backend:** Python, FastAPI, PostgreSQL, SQLAlchemy, Pydantic
 - **Frontend:** Next.js, TypeScript, Tailwind CSS
-- **AI:** local Ollama model (planned, not implemented yet)
+- **AI:** local Ollama (Qwen 2.5 3B) — advisory recommendations only
 - **Data:** Pandas, synthetic data
 - **Testing:** Pytest
 - **Integration:** Razorpay Test Mode + Webhooks (planned, not implemented yet)
@@ -34,14 +34,16 @@ this repo; the backend is organized by concern (`api`, `core`, `db`,
 Recover-AI/
 ├── backend/            # FastAPI app
 │   ├── app/
-│   │   ├── api/        # route handlers
-│   │   ├── core/       # config/settings
+│   │   ├── ai/          # AI provider abstraction + Ollama + safety-gated service
+│   │   ├── api/         # route handlers
+│   │   ├── core/        # config/settings
 │   │   ├── data_generation/  # synthetic dataset generator + seed script
-│   │   ├── db/         # SQLAlchemy session/base
-│   │   ├── models/     # SQLAlchemy models (Customer, Subscription, Payment, RecoveryCase, RecoveryActionHistory)
-│   │   ├── recovery/   # deterministic detection + recovery action engine
-│   │   ├── schemas/    # Pydantic schemas
-│   │   └── main.py     # app entrypoint
+│   │   ├── db/          # SQLAlchemy session/base + migration scripts
+│   │   ├── models/      # SQLAlchemy models (Customer, Subscription, Payment, RecoveryCase, RecoveryActionHistory, AIRecommendation)
+│   │   ├── recovery/    # deterministic detection + recovery action engine
+│   │   ├── schemas/     # Pydantic schemas
+│   │   └── main.py      # app entrypoint
+│   ├── scripts/         # standalone verification scripts (e.g. live Ollama check)
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
@@ -360,6 +362,183 @@ is untouched. Run once, safe to re-run:
 python -m app.db.migrate_phase4
 ```
 
+### 7. AI intelligence layer (Ollama / Qwen 2.5 3B) — recommends, never decides
+
+> **AI recommends. Deterministic safety logic validates. Recovery Engine executes.**
+
+Phase 5 adds a local LLM (Qwen 2.5 3B via Ollama) that looks at a
+recovery opportunity and *suggests* an action, purely as a second
+opinion alongside Phase 4's deterministic engine. The AI can never plan,
+validate, or execute a recovery action itself, and it never touches
+Razorpay or any real payment — those remain exclusively Phase 4's job,
+completely unmodified in what it's allowed to do.
+
+```
+Recovery Opportunity
+        ↓
+Controlled Context Builder        (app/ai/context.py)
+        ↓
+Local Ollama / Qwen 2.5 3B        (app/ai/ollama_provider.py)
+        ↓
+Structured AI Recommendation      (raw JSON text)
+        ↓
+Pydantic Validation                (app/ai/schemas.py -- rejects anything
+        ↓                            that doesn't fit the bounded shape)
+Deterministic Safety Validator    (the *same* app.recovery.action_rules
+        ↓                            .validate_safety Phase 4 uses)
+Fallback / Approval
+        ↓
+Existing Phase 4 Recovery Engine  (unchanged -- still the only thing
+                                    that ever plans/validates/executes)
+```
+
+No cloud AI, no API keys, no LangChain/LangGraph/RAG/vector DB/agents —
+just an HTTP call to a local Ollama server and a validated JSON contract.
+
+#### Ollama / Qwen 2.5 3B setup
+
+Install Ollama locally and pull the model (once):
+
+```bash
+ollama pull qwen2.5:3b
+```
+
+Environment variables (`backend/.env`, all optional -- these are the
+defaults):
+
+```bash
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_TIMEOUT_SECONDS=60
+```
+
+No API key -- Ollama is a local server. RecoverAI works fully without
+Ollama running at all; see **Fallback behavior** below.
+
+#### AI context (what the model sees)
+
+A small, controlled dict built fresh per case -- never the whole
+database, never PII (there isn't any to begin with: customers are
+identified only by generated ids): payment amount/status/failure
+reason, failure category, retry count, customer success rate and
+successful/failed payment counts, customer lifetime value, subscription
+status, recovery priority, amount at risk, prior recovery attempts, and
+the Phase 3/4 deterministic action for reference.
+
+#### Structured output
+
+The model must return JSON only, matching one fixed shape:
+
+```json
+{
+  "recommended_action": "RETRY_PAYMENT",
+  "confidence": 0.82,
+  "reason": "The customer has a strong payment history and the failure appears temporary.",
+  "risk_level": "LOW",
+  "customer_context": "Customer has successfully completed most previous payments.",
+  "alternative_action": "SCHEDULE_RETRY"
+}
+```
+
+`recommended_action` and `alternative_action` are restricted to the same
+five actions Phase 4 already knows: `RETRY_PAYMENT`, `SCHEDULE_RETRY`,
+`SEND_PAYMENT_REMINDER`, `REQUEST_PAYMENT_METHOD_UPDATE`, `ESCALATE` --
+Pydantic rejects anything else, along with out-of-range confidence,
+an invalid risk level, missing fields, or an empty/oversized reason.
+Invalid output is never trusted; it's recorded as a failed AI call and
+the system falls back to the deterministic action.
+
+#### Safety architecture
+
+The AI's suggested action is run through **the exact same**
+`validate_safety` function Phase 4 uses for real planned actions (not a
+separate, weaker copy) -- rejected if the payment already succeeded, the
+case is already terminal, the retry limit is exhausted, the subscription
+is canceled and the action would retry anyway, or the action isn't
+valid for the case's failure category. A rejected AI recommendation is
+never executed; the deterministic action is used instead.
+
+#### AI vs. deterministic decision
+
+Every AI call records both `deterministic_action` (what Phase 4's rules
+say) and `ai_recommended_action` (what the model said), whether they
+`agreement`d, the safety validation outcome, and whether `fallback_used`
+is true. This is what lets AI recommendations be measured against the
+deterministic baseline over time -- the AI is not asked to replace it.
+
+#### Fallback behavior
+
+If Ollama is unreachable, times out, returns something malformed, or its
+JSON fails validation, that specific call is recorded with its failure
+status (`unavailable`, `timeout`, `provider_error`, `invalid_json`,
+`invalid_schema`) and `fallback_used=true` -- the deterministic Phase 4
+action is always still available, and the rest of RecoverAI keeps
+working normally. AI being down never breaks the app.
+
+#### Database
+
+New table only: `ai_recommendations` (one row per AI analysis run --
+`ai_recommended_action`, `ai_confidence`, `ai_reason`, `ai_risk_level`,
+`ai_customer_context`, `ai_alternative_action`, `ai_status`, `ai_model`,
+`ai_generated_at`, `deterministic_action`, `safety_validation_result`,
+`fallback_used`, `effective_action`). Nothing existing is altered.
+Additive, safe to re-run:
+
+```bash
+python -m app.db.migrate_phase5
+```
+
+#### API usage
+
+```bash
+# Single opportunity: AI recommendation + deterministic comparison + safety check
+curl -X POST http://localhost:8000/api/recovery/opportunities/rec_pay_sub_004595/ai-recommend
+
+# Batch: analyzes the next N not-yet-analyzed opportunities (default 10, max 50)
+curl -X POST "http://localhost:8000/api/recovery/ai/analyze?batch_size=10"
+
+# Aggregate metrics
+curl http://localhost:8000/api/recovery/ai-summary
+```
+
+`ai-summary` returns cases analyzed, successful/failed AI calls,
+agreements/disagreements with the deterministic engine, rejected
+recommendations, fallback count, average confidence, breakdowns by
+action and risk level, and a live `ollama_available` check.
+
+#### Testing
+
+All Phase 5 automated tests mock the `AIProvider` interface (a
+`FakeAIProvider` test double, plus `httpx.MockTransport` for the Ollama
+HTTP layer itself) -- none of them require a running Ollama server.
+They cover valid/invalid/malformed AI responses, every Pydantic
+rejection case, provider timeout/unavailable/error handling, agreement
+and disagreement with the deterministic engine, an unsafe AI
+recommendation being rejected and falling back, escalation, context
+construction (compact, no PII), database persistence, and all three API
+endpoints (including empty-dataset and per-case-failure-in-a-batch
+cases).
+
+#### Live verification (run this yourself, against your own Ollama)
+
+A live Ollama server isn't reachable from a sandboxed build/CI
+environment, so live verification is a separate, deliberate step you run
+locally once Ollama is installed and the backend is up:
+
+```bash
+cd backend
+python scripts/verify_live_ollama.py --count 2
+```
+
+This checks Ollama is reachable, picks 1-3 *existing* recovery
+opportunities from your local database (creates nothing), calls the real
+`/ai-recommend` endpoint against your running backend for each, and
+prints the full result -- AI recommendation, deterministic comparison,
+safety validation, fallback status. It deliberately does not process the
+full opportunity set (by design: no GPU, ~8GB RAM -- keep batches and
+live tests small), and it never plans/validates/executes a recovery
+action or moves any money.
+
 ## Status
 
 **Phase 1:** project scaffolding — backend/frontend skeletons, health
@@ -375,11 +554,19 @@ analyzes payments and creates prioritized `RecoveryCase` records
 `/api/recovery/detect`, `/opportunities`, `/opportunities/{id}`, and
 `/summary` endpoints.
 
-**Phase 4 (current):** a deterministic recovery action engine
-(action selection, safety validation, a state machine, simulated -- not
-real -- execution) with a full audit trail, driving each `RecoveryCase`
-through plan → validate → execute via `/opportunities/{id}/plan`,
-`/validate`, `/execute`, `/history`, and `/action-summary`.
+**Phase 4:** a deterministic recovery action engine (action selection,
+safety validation, a state machine, simulated -- not real -- execution)
+with a full audit trail, driving each `RecoveryCase` through plan →
+validate → execute via `/opportunities/{id}/plan`, `/validate`,
+`/execute`, `/history`, and `/action-summary`.
 
-Not implemented yet: AI/Ollama integration, Razorpay integration and
-webhooks, real payment execution, the dashboard, and authentication.
+**Phase 5 (current):** a local AI intelligence layer (Ollama + Qwen 2.5
+3B) that produces advisory recommendations alongside the deterministic
+engine -- structured, Pydantic-validated, safety-gated through Phase 4's
+own validator, and always falling back to the deterministic action if
+the AI is unavailable or its output is rejected. The AI never executes
+anything; no real payment has been recovered by any phase so far, and
+Razorpay is not yet integrated.
+
+Not implemented yet: Razorpay integration and webhooks, real payment
+execution, the dashboard, and authentication.
