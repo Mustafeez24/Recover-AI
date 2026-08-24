@@ -47,8 +47,10 @@ Recover-AI/
 │   ├── tests/
 │   ├── requirements.txt
 │   └── .env.example
-├── frontend/            # Next.js app
-│   ├── app/
+├── frontend/            # Next.js app (App Router + TypeScript + Tailwind)
+│   ├── app/             # pages: dashboard, opportunities, opportunities/[id], ai
+│   ├── components/      # shared UI (nav, banner, badges, charts, buttons)
+│   ├── lib/             # typed API client, React Query hooks, formatters
 │   └── .env.example
 └── README.md
 ```
@@ -92,7 +94,10 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Frontend runs at http://localhost:3000.
+Frontend runs at http://localhost:3000 — the Phase 6 dashboard (see §8
+below). It talks to the backend at `NEXT_PUBLIC_API_BASE_URL`
+(`.env.example` defaults to `http://localhost:8000`); the backend must be
+running first.
 
 ### 4. Synthetic data (seed the database)
 
@@ -539,6 +544,69 @@ full opportunity set (by design: no GPU, ~8GB RAM -- keep batches and
 live tests small), and it never plans/validates/executes a recovery
 action or moves any money.
 
+### 8. Web dashboard (Phase 6)
+
+A real UI on top of everything above — the frontend was a static
+homepage through Phase 5; Phase 6 replaces it with a working dashboard
+that only *consumes* the existing backend API. No new business logic
+was added to the frontend, no bulk-execute endpoint was added to the
+backend, and the plan → validate → execute sequence is unchanged: every
+action button on the case detail page calls one existing per-case
+endpoint, in order, exactly as before.
+
+**Stack:** Next.js App Router + TypeScript + Tailwind (already
+scaffolded in Phase 1) + `@tanstack/react-query` (data fetching/caching,
+mutation state for the action buttons) + `recharts` (charts). No new
+backend dependency, no new database table or column, no state
+management library beyond React Query's cache.
+
+**Pages:**
+
+| Route | Purpose |
+|---|---|
+| `/` | Executive dashboard — KPI tiles (payments analyzed, opportunities, revenue at risk, simulated recovered revenue, Ollama status) sourced from `/api/data/summary`, `/api/recovery/summary`, `/api/recovery/action-summary`, `/api/recovery/ai-summary`; priority/outcome charts; **Run Detection** and **Run AI Batch (10)** buttons |
+| `/opportunities` | Filterable, paginated table over `GET /api/recovery/opportunities` (priority/status/failure_category/min·max amount) |
+| `/opportunities/[id]` | Case detail — payment/customer/detection context, the **Plan → Validate → Execute** buttons (each a direct call to the existing per-case endpoint), the **AI Recommendation** panel (deterministic vs. AI, agreement, safety validation, fallback), and the full audit-trail timeline from `GET .../history` |
+| `/ai` | AI intelligence analytics from `/api/recovery/ai-summary` — agreement/disagreement, rejected recommendations, fallback count, average confidence, breakdowns by action and risk level, live Ollama availability |
+
+A persistent banner — **"Simulated / Advisory Only — No real payments
+are executed."** — is rendered in the root layout on every page.
+
+**Safety model, unchanged:** the UI never skips validation, never
+bulk-executes, and never lets the AI's suggestion bypass the safety
+validator. `lib/api-client.ts` is a thin typed wrapper with one function
+per existing endpoint — no recovery/eligibility/priority logic is
+duplicated in the frontend; every decision still happens in the Python
+backend exactly as in Phases 3-5.
+
+**Testing:** Vitest + React Testing Library (`npm test`) covers the API
+client (request shaping, query params, error handling — mocked
+`fetch`, no backend needed), the formatters, and key components
+(`AdvisoryBanner` always renders the required text; `ActionButton`
+disables itself and shows a pending label while a mutation is in
+flight; badges render every known status/priority/risk value). `npm run
+build` and `npm run lint` both pass clean.
+
+**Manual verification:** driven end-to-end with a headless browser
+against the real backend + Postgres dataset — dashboard KPIs and charts
+render real numbers; opportunity filters narrow the table correctly;
+a case's Plan → Validate → Execute buttons were clicked in sequence and
+correctly replayed the FAILED → PLANNED → VALIDATED → EXECUTING → FAILED
+retry loop with a new audit-trail entry per step; the AI Recommendation
+button was clicked with Ollama genuinely offline and rendered the exact
+fallback message with the real connection-refused error and the
+deterministic effective action; the AI Analytics page correctly showed
+"Ollama: Unavailable" and empty-but-not-broken charts.
+
+**Deployment (Vercel + Render) — not yet actually deployed, config
+only:** the frontend is a standard Next.js app (`NEXT_PUBLIC_API_BASE_URL`
+pointed at the Render backend); the backend needs `CORS_ORIGINS` to
+include the Vercel domain and a managed Postgres add-on. Ollama isn't
+practical to run on a typical Render web service — a deployed instance
+would show "Ollama: Unavailable" and fall back to deterministic actions
+throughout, which is itself a legitimate demonstration of the fallback
+behavior Phase 5 was built for, not a bug.
+
 ## Status
 
 **Phase 1:** project scaffolding — backend/frontend skeletons, health
@@ -560,13 +628,23 @@ with a full audit trail, driving each `RecoveryCase` through plan →
 validate → execute via `/opportunities/{id}/plan`, `/validate`,
 `/execute`, `/history`, and `/action-summary`.
 
-**Phase 5 (current):** a local AI intelligence layer (Ollama + Qwen 2.5
-3B) that produces advisory recommendations alongside the deterministic
-engine -- structured, Pydantic-validated, safety-gated through Phase 4's
-own validator, and always falling back to the deterministic action if
-the AI is unavailable or its output is rejected. The AI never executes
-anything; no real payment has been recovered by any phase so far, and
-Razorpay is not yet integrated.
+**Phase 5:** a local AI intelligence layer (Ollama + Qwen 2.5 3B) that
+produces advisory recommendations alongside the deterministic engine --
+structured, Pydantic-validated, safety-gated through Phase 4's own
+validator, and always falling back to the deterministic action if the
+AI is unavailable or its output is rejected.
+
+**Phase 6 (current):** a Next.js web dashboard (executive summary,
+opportunities table, case detail with the Plan → Validate → Execute
+controls and AI recommendation panel, AI analytics, full audit-trail
+timeline) that consumes the existing backend API as-is -- no new
+business logic in the frontend, no bulk-execute endpoint, safety model
+unchanged. A persistent "Simulated / Advisory Only" banner is shown on
+every page.
+
+No real payment has been recovered by any phase so far, Razorpay is not
+yet integrated, and the app has not been deployed to Vercel/Render (see
+§8) -- only local verification has been performed.
 
 Not implemented yet: Razorpay integration and webhooks, real payment
-execution, the dashboard, and authentication.
+execution, authentication, and an actual Vercel/Render deployment.
