@@ -129,10 +129,20 @@ def select_action(case, payment, customer, subscription):
 # ---------------------------------------------------------------------------
 
 
-def validate_safety(case, payment, customer, subscription):
+def validate_safety(case, payment, customer, subscription, action_override=None):
     """Returns (allowed: bool, rejection_reason: str | None). Never raises;
-    the caller decides what a rejection means for the case's state."""
-    if payment is None or customer is None or case.action is None:
+    the caller decides what a rejection means for the case's state.
+
+    By default validates `case.action` (the already-planned Phase 4
+    action). Pass `action_override` (a RecoveryAction) to validate a
+    *candidate* action instead -- e.g. an AI-suggested action -- without
+    needing it to already be written onto the case. This runs the exact
+    same rules either way: the validator never trusts a caller (planner
+    or AI) blindly.
+    """
+    raw_action = action_override.value if isinstance(action_override, RecoveryAction) else (action_override or case.action)
+
+    if payment is None or customer is None or raw_action is None:
         return False, "Required payment/recovery information is missing."
 
     if case.status in {s.value for s in (RecoveryCaseStatus.RECOVERED, RecoveryCaseStatus.EXHAUSTED, RecoveryCaseStatus.ESCALATED)}:
@@ -142,9 +152,9 @@ def validate_safety(case, payment, customer, subscription):
         return False, "Payment already succeeded; rejecting the planned action."
 
     try:
-        action = RecoveryAction(case.action)
+        action = RecoveryAction(raw_action)
     except ValueError:
-        return False, f"Unknown action '{case.action}'."
+        return False, f"Unknown action '{raw_action}'."
 
     if action in (RecoveryAction.RETRY_PAYMENT, RecoveryAction.SCHEDULE_RETRY) and payment.retry_count >= MAX_RETRY_CAP:
         return False, f"Retry limit reached ({payment.retry_count} >= {MAX_RETRY_CAP}); this action is no longer allowed."

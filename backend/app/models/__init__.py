@@ -1,3 +1,4 @@
+from app.models.ai_recommendation import AIRecommendation
 from app.models.customer import Customer
 from app.models.enums import (
     FailureCategory,
@@ -20,6 +21,7 @@ __all__ = [
     "Payment",
     "RecoveryCase",
     "RecoveryActionHistory",
+    "AIRecommendation",
     "PaymentStatus",
     "FailureReason",
     "PaymentMethod",

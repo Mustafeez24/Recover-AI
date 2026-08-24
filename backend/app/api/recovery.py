@@ -4,12 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.ai.provider import AIProvider
+from app.ai.service import analyze_opportunity, get_ai_summary, get_default_provider
 from app.db.session import get_db
-from app.models import FailureCategory, RecoveryCase, RecoveryPriority
+from app.models import AIRecommendation, FailureCategory, RecoveryCase, RecoveryPriority
 from app.recovery.engine import get_summary, run_detection
 from app.recovery.workflow import execute_action, get_action_summary, plan_action, validate_action_step
 
 router = APIRouter(prefix="/api/recovery", tags=["recovery"])
+
+
+def get_ai_provider() -> AIProvider:
+    return get_default_provider()
 
 
 def _case_to_dict(case: RecoveryCase) -> dict:
@@ -171,3 +177,61 @@ def history(recovery_case_id: str, db: Session = Depends(get_db)):
 @router.get("/action-summary")
 def action_summary(db: Session = Depends(get_db)):
     return get_action_summary(db)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: AI intelligence layer (advisory only -- see app.ai.service)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/opportunities/{recovery_case_id}/ai-recommend")
+def ai_recommend(
+    recovery_case_id: str,
+    db: Session = Depends(get_db),
+    provider: AIProvider = Depends(get_ai_provider),
+):
+    """Ask the local Ollama model for a recommendation on this opportunity,
+    validate it, compare it against the Phase 4 deterministic action, and
+    record the result. Never plans, validates, or executes the recovery
+    action itself -- that stays Phase 4's job."""
+    case = _get_case_or_404(db, recovery_case_id)
+    return analyze_opportunity(db, provider, case)
+
+
+@router.post("/ai/analyze")
+def ai_analyze_batch(
+    db: Session = Depends(get_db),
+    provider: AIProvider = Depends(get_ai_provider),
+    batch_size: int = Query(10, ge=1, le=50),
+):
+    """Runs ai-recommend over the next `batch_size` opportunities that
+    haven't been AI-analyzed yet. One case failing doesn't stop the rest
+    of the batch. Defaults to 10, capped at 50, to stay well within a
+    small local model's comfortable throughput."""
+    already_analyzed = select(AIRecommendation.recovery_case_id).distinct()
+    stmt = (
+        select(RecoveryCase)
+        .where(RecoveryCase.recovery_case_id.notin_(already_analyzed))
+        .order_by(RecoveryCase.created_at)
+        .limit(batch_size)
+    )
+    cases = db.execute(stmt).scalars().all()
+
+    results = []
+    for case in cases:
+        try:
+            result = analyze_opportunity(db, provider, case)
+        except Exception as exc:  # a single case must never break the batch
+            result = {"recovery_case_id": case.recovery_case_id, "ai_status": "error", "ai_error": str(exc)}
+        results.append(result)
+
+    return {
+        "batch_size": batch_size,
+        "cases_processed": len(results),
+        "results": results,
+    }
+
+
+@router.get("/ai-summary")
+def ai_summary(db: Session = Depends(get_db), provider: AIProvider = Depends(get_ai_provider)):
+    return get_ai_summary(db, provider)

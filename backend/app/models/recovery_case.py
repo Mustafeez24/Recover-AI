@@ -64,6 +64,12 @@ class RecoveryCase(Base):
         cascade="all, delete-orphan",
         order_by="RecoveryActionHistory.created_at",
     )
+    ai_recommendations = relationship(
+        "AIRecommendation",
+        back_populates="recovery_case",
+        cascade="all, delete-orphan",
+        order_by="AIRecommendation.ai_generated_at",
+    )
 
     __table_args__ = (
         Index("ix_recovery_cases_customer_id", "customer_id"),
