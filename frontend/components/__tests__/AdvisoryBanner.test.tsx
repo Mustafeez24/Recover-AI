@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 import { AdvisoryBanner } from "../AdvisoryBanner";
 
 describe("AdvisoryBanner", () => {
-  it("always displays the exact required advisory text", () => {
+  it("always displays the simulation mode label and safety disclosure", () => {
     render(<AdvisoryBanner />);
+    expect(screen.getByText("Simulation Mode")).toBeInTheDocument();
     expect(
-      screen.getByText("Simulated / Advisory Only — No real payments are executed.")
+      screen.getByText(/All recovery actions are advisory and simulated\. No real payments are executed\./)
     ).toBeInTheDocument();
   });
 });

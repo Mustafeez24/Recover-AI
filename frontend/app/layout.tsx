@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AdvisoryBanner } from "@/components/AdvisoryBanner";
-import { NavBar } from "@/components/NavBar";
+import { AppShell } from "@/components/AppShell";
 import { QueryProvider } from "@/lib/query-provider";
 
 const geistSans = Geist({
@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "RecoverAI",
-  description: "AI-powered revenue recovery agent",
+  description: "Recover revenue intelligently — AI-powered revenue recovery agent",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -26,11 +26,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 dark:bg-black">
+      <body className="min-h-full flex flex-col bg-background text-foreground">
         <QueryProvider>
           <AdvisoryBanner />
-          <NavBar />
-          <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-8">{children}</main>
+          <AppShell>{children}</AppShell>
         </QueryProvider>
       </body>
     </html>

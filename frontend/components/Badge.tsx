@@ -1,31 +1,31 @@
 import { formatLabel } from "@/lib/format";
 
 const PRIORITY_CLASSES: Record<string, string> = {
-  high: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  medium: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  low: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  high: "bg-danger-bg text-danger-fg ring-1 ring-inset ring-danger-border",
+  medium: "bg-warning-bg text-warning-fg ring-1 ring-inset ring-warning-border",
+  low: "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10",
 };
 
 const STATUS_CLASSES: Record<string, string> = {
-  detected: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  planned: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-  validated: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
-  executing: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  recovered: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  failed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  escalated: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300",
-  exhausted: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  detected: "bg-info-bg text-info-fg ring-1 ring-inset ring-info-border",
+  planned: "bg-accent-500/10 text-accent-600 ring-1 ring-inset ring-accent-500/20 dark:text-accent-400",
+  validated: "bg-accent-500/10 text-accent-600 ring-1 ring-inset ring-accent-500/20 dark:text-accent-400",
+  executing: "bg-warning-bg text-warning-fg ring-1 ring-inset ring-warning-border",
+  recovered: "bg-success-bg text-success-fg ring-1 ring-inset ring-success-border",
+  failed: "bg-danger-bg text-danger-fg ring-1 ring-inset ring-danger-border",
+  escalated: "bg-warning-bg text-warning-fg ring-1 ring-inset ring-warning-border",
+  exhausted: "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200 dark:bg-white/5 dark:text-slate-300 dark:ring-white/10",
 };
 
 const RISK_CLASSES: Record<string, string> = {
-  LOW: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  MEDIUM: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  HIGH: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  LOW: "bg-success-bg text-success-fg ring-1 ring-inset ring-success-border",
+  MEDIUM: "bg-warning-bg text-warning-fg ring-1 ring-inset ring-warning-border",
+  HIGH: "bg-danger-bg text-danger-fg ring-1 ring-inset ring-danger-border",
 };
 
 function Badge({ text, className }: { text: string; className: string }) {
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${className}`}>
       {text}
     </span>
   );
